@@ -27,11 +27,11 @@ typedef struct expr_t {
 
 int Expr_Print(expr_t *expr);
 int Expr_Equal(expr_t *a, expr_t *b);
-expr_t *Expr_Clone(expr_t *expr);
-void Expr_Free(expr_t *expr);
 
 expr_t *Expr_Implies(expr_t *a, expr_t *b);
 expr_t *Expr_Not(expr_t *a);
 expr_t *Expr_Atom(char *name);
+void    Expr_Free(expr_t* expr);
+expr_t *Expr_Clone(expr_t *expr);
 
 #endif

@@ -47,6 +47,7 @@ static void Parser_ReadToken(parser_t *parser)
         len++;
         parser->cur_char++;
     }
+    tok->name[len] = '\0';
 }
 
 void Parser_Init(parser_t *parser, const char *input)
@@ -58,38 +59,34 @@ void Parser_Init(parser_t *parser, const char *input)
 expr_t *Parser_ReadExpr(parser_t *parser)
 {
     token_t *tok = &parser->cur_token;
-    expr_t *expr = malloc(sizeof(expr_t));
     
     if (tok->type == TOK_NOT) {
         Parser_ReadToken(parser);
-        expr->type = EXPR_NOT;
-        expr->not.a = Parser_ReadExpr(parser);
-        return expr;
+        return Expr_Not(Parser_ReadExpr(parser));
     }
     if (tok->type == TOK_ATOM) {
+        char name[16];
+        strcpy(name, tok->name);
         Parser_ReadToken(parser);
-        expr->type = EXPR_ATOM;
-        strcpy(expr->atom.name, tok->name);
-        return expr;
+        return Expr_Atom(name);
     }
     if (tok->type == TOK_LPAREN) {
         Parser_ReadToken(parser);
-        expr->type = EXPR_IMPLIES;
-        expr->implies.a = Parser_ReadExpr(parser);
+        expr_t *left = Parser_ReadExpr(parser);
         if (parser->cur_token.type != TOK_IMPLIES) {
             printf("Expected '=>', got ");
             Token_Print(tok);
             exit(1);
         }
         Parser_ReadToken(parser);
-        expr->implies.b = Parser_ReadExpr(parser);
+        expr_t *right = Parser_ReadExpr(parser);
         if (parser->cur_token.type != TOK_RPAREN) {
             printf("Expected ')', got ");
             Token_Print(tok);
             exit(1);
         }
         Parser_ReadToken(parser);
-        return expr;
+        return Expr_Implies(left, right);
     }
 
     printf("Expected '!', '(', or atom, got ");
