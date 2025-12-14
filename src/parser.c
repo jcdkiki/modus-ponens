@@ -1,4 +1,5 @@
 #include "parser.h"
+#include <signal.h>
 #include <stdlib.h>
 #include <ctype.h>
 #include <stdio.h>
@@ -76,14 +77,16 @@ expr_t *Parser_ReadExpr(parser_t *parser)
         if (parser->cur_token.type != TOK_IMPLIES) {
             printf("Expected '=>', got ");
             Token_Print(tok);
-            exit(1);
+            printf("\n");
+            raise(SIGTRAP);
         }
         Parser_ReadToken(parser);
         expr_t *right = Parser_ReadExpr(parser);
         if (parser->cur_token.type != TOK_RPAREN) {
             printf("Expected ')', got ");
             Token_Print(tok);
-            exit(1);
+            printf("\n");
+            raise(SIGTRAP);
         }
         Parser_ReadToken(parser);
         return Expr_Implies(left, right);
@@ -91,5 +94,7 @@ expr_t *Parser_ReadExpr(parser_t *parser)
 
     printf("Expected '!', '(', or atom, got ");
     Token_Print(tok);
-    exit(1);
+    printf("\n");
+    raise(SIGTRAP);
+    return NULL;
 }

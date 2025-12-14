@@ -1,7 +1,9 @@
 #include "parser.h"
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 
 #define MAX_EXPRS 100000
 #define MAX_TERMS 1000
@@ -12,276 +14,390 @@ typedef enum {
     INFERENCE_DEDUCTION
 } inference_type_t;
 
-typedef struct {
+typedef struct true_expr_t {
     expr_t *e;
     inference_type_t type;
-    int parents[3];
+    int idx;
+
+    union {
+        struct {
+            expr_t *axiom;
+            expr_t *A, *B, *C;
+        } axiom;
+        
+        struct {
+            struct expr_t *A_impl_B;
+            struct expr_t *A;
+        } modus_ponens;
+
+        struct {
+            // todo;
+        } deduction;
+    };
+    
     int printed;
+    bool visited;
 } true_expr_t;
 
-true_expr_t pool[MAX_EXPRS];
-int pool_count = 0;
+uint64_t TrueExpr_Hash(true_expr_t te)
+{
+    return Expr_Hash(te.e);
+}
 
-expr_t *terms[MAX_TERMS];
-int term_count = 0;
+bool TrueExpr_Cmp(true_expr_t a, true_expr_t b)
+{
+    return Expr_Equal(a.e, b.e);
+}
+
+#define NAME pool_map
+#define KEY_TY expr_t*
+#define VAL_TY true_expr_t
+#define HASH_FN Expr_Hash
+#define CMPR_FN Expr_Equal
+#include "verstable.h"
+
+#define NAME terms_set
+#define KEY_TY expr_t*
+#define HASH_FN Expr_Hash
+#define CMPR_FN Expr_Equal
+#include "verstable.h"
+
+pool_map pool;
+terms_set terms;
 
 static int print_axioms = 0;
 static int print_history = 1;
 static int add_neg_terms = 0;
 static int add_self_impl = 0;
-static int less_terms = 0;
 
-int IsExprInPool(expr_t *e)
+#define NOT_FOUND -1
+
+true_expr_t *FindExprInPool(expr_t *e)
 {
-    for (int i = 0; i < pool_count; i++) {
-        if (Expr_Equal(pool[i].e, e)) return 1;
+    pool_map_itr iter = pool_map_get(&pool, e);
+    if (pool_map_is_end(iter)) {
+        return NULL;
     }
-    return 0;
+    return &iter.data->val;
 }
 
-int IsExprInTerms(expr_t *e)
+expr_t *FindExprInTerms(expr_t *e)
 {
-    for (int i = 0; i < term_count; i++) {
-        if (Expr_Equal(terms[i], e)) return 1;
+    terms_set_itr iter = terms_set_get(&terms, e);
+    if (terms_set_is_end(iter)) {
+        return NULL;
     }
-    return 0;
+    return iter.data->key;
 }
 
-void AddToPool(expr_t* e, int parent1, int parent2, int parent3, inference_type_t type)
+void TrueExpr_Init(true_expr_t *te, expr_t *e)
 {
-    if (pool_count < MAX_EXPRS) {
-        if (!IsExprInPool(e)) {
-            pool[pool_count].e = e;
-            pool[pool_count].type = type;
-            pool[pool_count].parents[0] = parent1;
-            pool[pool_count].parents[1] = parent2;
-            pool[pool_count].parents[2] = parent3;
-            pool[pool_count].printed = 0;
-            pool_count++;
-        }
-    }
-    else {
-        printf("POOL IS FULL!!!\n");
-        exit(1);
-    }
+    te->e = e;
+    te->printed = 0;
+    te->idx = pool_map_size(&pool);
+    te->visited = false;
+}
+
+void AddToPool(true_expr_t* te)
+{
+    pool_map_itr iter = pool_map_insert(&pool, te->e, *te);
+}
+
+void TrueExpr_ModusPonens(true_expr_t *te, expr_t *A_impl_B, expr_t *A)
+{
+    te->type = INFERENCE_MODUS_PONENS;
+    te->modus_ponens.A = A;
+    te->modus_ponens.A_impl_B = A_impl_B;
+}
+
+void TrueExpr_Axiom(true_expr_t *te, expr_t *axiom, expr_t *A, expr_t *B, expr_t *C)
+{
+    te->type = INFERENCE_AXIOM;
+    te->axiom.axiom = axiom;
+    te->axiom.A = A;
+    te->axiom.B = B;
+    te->axiom.C = C;
+}
+
+void TrueExpr_Deduction(true_expr_t *te)
+{
+    te->type = INFERENCE_DEDUCTION;
 }
 
 void AddTerm(expr_t* e)
 {
-    if (term_count < MAX_TERMS) {
-        terms[term_count++] = e;
-    }
-    else {
-        printf("TERM IS FULL!!\n");
-        exit(1);
-    }
+    terms_set_insert(&terms, e);
 }
 
 void ExtractSubformulas(expr_t* e, int negate)
 {
-    if (e->type == EXPR_IMPLIES) {
+    switch (e->type) {
+    case EXPR_ATOM:
+        break;
+    case EXPR_IMPLIES:
         ExtractSubformulas(e->implies.a, negate);
         ExtractSubformulas(e->implies.b, negate);
+        break;
+    case EXPR_NOT:
+        ExtractSubformulas(e->not.a, !negate);
+        break;
+    default:
+        ASSERT(0, "Unknown expression type");
+        break;
     }
-    else if (e->type == EXPR_NOT) {
-        ExtractSubformulas(e->not.a, negate);
-    }
-
+    
     if (negate) AddTerm(Expr_Not(e));
     else AddTerm(e);
 }
 
 expr_t* Substitute(expr_t* template, expr_t* subA, expr_t* subB, expr_t* subC)
 {
-    if (template->type == EXPR_ATOM) {
+    switch (template->type) {
+    case EXPR_ATOM:
         if (strcmp(template->atom.name, "A") == 0 && subA != NULL) return Expr_Clone(subA);
         if (strcmp(template->atom.name, "B") == 0 && subB != NULL) return Expr_Clone(subB);
         if (strcmp(template->atom.name, "C") == 0 && subC != NULL) return Expr_Clone(subC);
-        printf("What the hell?\n");
-    } 
-    else if (template->type == EXPR_IMPLIES) {
+        ASSERT(0, "Every 'variable' should be replaced");
+        break;
+
+    case EXPR_IMPLIES:
         return Expr_Implies(
             Substitute(template->implies.a, subA, subB, subC),
             Substitute(template->implies.b, subA, subB, subC)
         );
-    }
-    else if (template->type == EXPR_NOT) {
+    
+    case EXPR_NOT:
         return Expr_Not(
             Substitute(template->not.a, subA, subB, subC)
         );
+    
+    default:
+        ASSERT(0, "Unknown expression type");
+        break;
     }
+
     return NULL;
 }
 
-void PrintAxiom(int i, int j, int k, int expr_idx)
+void PrintAxiom(true_expr_t *te)
 {
-    printf("       A = ");
-    Expr_Print(terms[i]);
-    printf(", B = ");
-    Expr_Print(terms[j]);
-    printf(", C = ");
-    Expr_Print(terms[k]);
+    printf("   Axiom = ");
+    Expr_Print(te->axiom.axiom);
+    printf("\n       A = ");
+    Expr_Print(te->axiom.A);
+    printf("\n       B = ");
+    Expr_Print(te->axiom.B);
+    printf("\n       C = ");
+    Expr_Print(te->axiom.C);
     printf("\n");
 
-    printf("  %3d ", expr_idx);
-    Expr_Print(pool[expr_idx].e);
+    printf("  %3d ", te->idx);
+    Expr_Print(te->e);
     printf("\n\n");
 }
 
-void InstantiateAxioms(expr_t* ax)
+void PrintModusPonens(true_expr_t *te)
+{
+    true_expr_t *A_impl_B = FindExprInPool(te->modus_ponens.A_impl_B);
+    true_expr_t *A = FindExprInPool(te->modus_ponens.A);
+
+    printf("%5d ", A_impl_B->idx);
+    Expr_Print(A_impl_B->e);
+    printf(",\n%5d  ", A->idx); 
+    int len = Expr_Print(A->e);
+    printf("\n%5d ", te->idx);
+    while (len--) putc(' ', stdout);
+    printf("  |- ");
+    Expr_Print(te->e);
+    printf("\n\n");
+}
+
+void InstantiateAxiom(expr_t* ax)
 {
     if (print_axioms) {
         printf("Axiom: ");
         Expr_Print(ax);
         printf("\n");
     }
-    
-    for (int i = 0; i < term_count; i++) {
-        for (int j = 0; j < term_count; j++) {
-            for (int k = 0; k < term_count; k++) {
-                expr_t *instance = Substitute(ax, terms[i], terms[j], terms[k]);
+
+    terms_set_itr begin = terms_set_first(&terms);
+    for (terms_set_itr it_i = begin; !terms_set_is_end(it_i); it_i = terms_set_next(it_i)) {
+        for (terms_set_itr it_j = begin; !terms_set_is_end(it_j); it_j = terms_set_next(it_j)) {
+            for (terms_set_itr it_k = begin; !terms_set_is_end(it_k); it_k = terms_set_next(it_k)) {
+                expr_t *A = it_i.data->key;
+                expr_t *B = it_j.data->key;
+                expr_t *C = it_k.data->key;
+
+                expr_t *instance = Substitute(ax, A, B, C);
                 
-                if (IsExprInPool(instance)) {
-                    Expr_Free(instance);
+                if (FindExprInTerms(instance) == NULL) {
+                    true_expr_t te;
+                    TrueExpr_Init(&te, instance);
+                    TrueExpr_Axiom(&te, ax, A, B, C);
+                    AddToPool(&te);
+                    if (print_axioms) PrintAxiom(&te);
                 }
                 else {
-                    AddToPool(instance, i, j, k, INFERENCE_AXIOM);
-                    if (print_axioms) {
-                        PrintAxiom(i, j, k, pool_count - 1);
-                    }
+                    Expr_Free(instance);
                 }
             }
         }
     }
 }
 
-expr_t *TryModusPonens(expr_t *a_impl_b, expr_t *a)
+terms_set assumptions;
+
+bool ProveWithAssumptions(expr_t* goal, terms_set* temp_assumptions, int depth);
+
+bool TryDeduction(expr_t* A)
 {
-    if (a_impl_b->type == EXPR_IMPLIES) {
-        if (Expr_Equal(a_impl_b->implies.a, a)) {
-            return a_impl_b->implies.b;
-        }
-    }
-    return NULL;
+    terms_set local_assumptions;
+    terms_set_init(&local_assumptions);
+
+    bool result = ProveWithAssumptions(A, &local_assumptions, 0);
+    
+    terms_set_clear(&local_assumptions);
+    return result;
 }
 
-void PrintModusPonens(int i, int j, int res_idx)
+#define DEPTH for (int i = 0; i < depth; i++) printf("  ");
+
+bool ProveWithAssumptions(expr_t* goal, terms_set* temp_assumptions, int depth)
 {
-    printf("%5d ", i);
-    Expr_Print(pool[i].e);
-    printf(",\n%5d  ", j); 
-    int len = Expr_Print(pool[j].e);
-    printf("\n%5d ", res_idx);
-    while (len--) putc(' ', stdout);
-    printf("  |- ");
-    Expr_Print(pool[res_idx].e);
-    printf("\n\n");
-}
-
-int hyp_count = 0;
-expr_t *hypotheses[100];
-
-int Prove(expr_t* target, int depth)
-{
-    for (int i = 0; i < depth*2 - 2; i++) putc(' ', stdout);
-    printf("try prove "); Expr_Print(target); printf("\n");
-
-    for (int i = 0; i < hyp_count; i++) {
-        if (Expr_Equal(hypotheses[i], target)) {
-            for (int i = 0; i < depth*2; i++) putc(' ', stdout);
-            printf("already assumed: "); Expr_Print(target); printf("\n");
-            goto proved;
-        }
+    if (depth > 50) {
+        return false;
     }
 
-    if (target->type == EXPR_IMPLIES) {
-        expr_t* left = target->implies.a;
-        expr_t* right = target->implies.b;
-        
-        for (int i = 0; i < depth*2; i++) putc(' ', stdout);
-        printf("assume "); Expr_Print(left); printf("\n");
-        
-        hypotheses[hyp_count] = left;
-        hyp_count++;
-        int result = Prove(right, depth + 1);
-        hyp_count--;
-
-        if (result) goto proved;
+    //DEPTH printf("Prove "); Expr_Print(goal); printf("\n");
+    
+    if (FindExprInPool(goal) != NULL) {
+        //DEPTH printf("OK! (Already proven)\n");
+        return true;
     }
 
-    for (int i = 0; i < hyp_count; i++) {
-        if (hypotheses[i]->type == EXPR_IMPLIES && Expr_Equal(hypotheses[i]->implies.b, target)) {
-            for (int i = 0; i < depth*2; i++) putc(' ', stdout);
-            printf("already assumed "); Expr_Print(hypotheses[i]); printf("\n");
-            if (Prove(hypotheses[i]->implies.a, depth + 1)) {
-                goto proved;
+    terms_set_itr it_assume = terms_set_get(temp_assumptions, goal);
+    if (!terms_set_is_end(it_assume)) {
+        //DEPTH printf("OK! (assumed)\n");
+        return true;
+    }
+
+    for (pool_map_itr it = pool_map_first(&pool); !pool_map_is_end(it); it = pool_map_next(it)) {
+        true_expr_t *te = &it.data->val;
+        expr_t *e = te->e;
+
+        if (te->visited) continue;
+
+        if (e->type == EXPR_IMPLIES && Expr_Equal(e->implies.b, goal)) {
+            te->visited = true;
+            bool ok = ProveWithAssumptions(e->implies.a, temp_assumptions, depth+1);
+            te->visited = false;
+            if (ok) {
+                //DEPTH printf("OK! (found X => goal, proved X)\n");
+                return true;    
             }
         }
     }
 
-    for (int i = 0; i < depth*2 - 2; i++) putc(' ', stdout);
-    printf("????\n");
-    return 0;
+    // A => B
+    if (goal->type == EXPR_IMPLIES) {
+        expr_t* A = goal->implies.a;
+        expr_t* B = goal->implies.b;
+        
+        bool ok = false;
+        if (terms_set_is_end(terms_set_get(temp_assumptions, A))) {
+            //DEPTH printf("Assume "); Expr_Print(A); printf("\n");
+            terms_set_insert(temp_assumptions, A);
+            ok = ProveWithAssumptions(B, temp_assumptions, depth+1);
+            terms_set_erase(temp_assumptions, A);
+        }
+        else ok = ProveWithAssumptions(B, temp_assumptions, depth+1);
 
-proved:
-    for (int i = 0; i < depth*2 - 2; i++) putc(' ', stdout);
-    printf("TRUE!\n");
-    return 1;
+        if (ok) {
+            //DEPTH printf("OK! (assume A, prove B)\n");
+            return true;
+        }
+    }
+
+    return false;
 }
 
-int RunInference(expr_t* goal)
+true_expr_t *RunInference(expr_t* goal)
 {
-    int new_found = 1;
     int cycle = 0;
-    
-    while (new_found) {
+    int new_found = 1;
+    int goal_found = 0;
+
+    while (new_found != 0 && !goal_found && cycle < 2) {
         new_found = 0;
-        int current_cnt = pool_count;
         cycle++;
         
-        printf("CYCLE %d\n", cycle );
-        
-        for (int i = 0; i < current_cnt; i++) {
-            for (int j = 0; j < current_cnt; j++) {
-                
-                expr_t *res = TryModusPonens(pool[i].e, pool[j].e);
-                
-                if (res) {
-                    if (!IsExprInPool(res)) {
-                        AddToPool(res, i, j, -1, INFERENCE_MODUS_PONENS);
-                        new_found = 1;
-                        
-                        if (Expr_Equal(res, goal)) {
-                            printf("GOAL FOUND!\n");
-                            return 1;
-                        }
-                    }
-                }
+        for (pool_map_itr it = pool_map_first(&pool); !pool_map_is_end(it) && !goal_found;) {
+            expr_t *A_impl_B = it.data->val.e;
+            
+            if (A_impl_B->type != EXPR_IMPLIES) {
+                continue;
             }
+            expr_t *A = A_impl_B->implies.a;
+            expr_t *B = A_impl_B->implies.b;
+            
+            if (FindExprInPool(B) != NULL) {
+                it = pool_map_next(it);
+                continue;
+            }
+
+            true_expr_t *A_te = FindExprInPool(A);
+            //if (A_te == NULL) {
+            //    bool res = TryDeduction(A);
+            //    if (res) {
+            //        printf("DEDUCTED "); Expr_Print(A); printf("\n");
+            //        true_expr_t te;
+            //        TrueExpr_Init(&te, B);
+            //        TrueExpr_Deduction(&te);
+            //        AddToPool(&te); // iterator gets invalidated.... :(((
+            //        it = pool_map_first(&pool);
+            //        new_found = 1;
+            //        continue;
+            //    }
+            //}
+            
+            if (A_te != NULL) {
+                true_expr_t te;
+                TrueExpr_Init(&te, B);
+                TrueExpr_ModusPonens(&te, A_impl_B, A);
+                AddToPool(&te); // iterator gets invalidated.... :(((
+                it = pool_map_first(&pool);
+                new_found = 1;
+                
+                if (Expr_Equal(B, goal)) {
+                    printf("GOAL FOUND!\n");
+                    goal_found = 1;
+                }
+                continue;
+            }
+
+            it = pool_map_next(it);
         }
     }
 
-    return Prove(goal, 1);
+    return FindExprInPool(goal); 
 }
 
-void PrintHistory(int idx)
+void PrintHistory(true_expr_t *te)
 {
-    if (idx == -1) return;
-    true_expr_t *te = &pool[idx];
     if (te->printed) return;
     te->printed = 1;
 
     switch (te->type) {
     case INFERENCE_AXIOM:
-        PrintAxiom(te->parents[0], te->parents[1], te->parents[2], idx);
+        PrintAxiom(te);
         break;
     case INFERENCE_MODUS_PONENS:
-        PrintHistory(te->parents[0]);
-        PrintHistory(te->parents[1]);
-        PrintModusPonens(te->parents[0], te->parents[1], idx);
+        PrintHistory(FindExprInPool(te->modus_ponens.A));
+        PrintHistory(FindExprInPool(te->modus_ponens.A_impl_B));
+        PrintModusPonens(te);
         break;
     case INFERENCE_DEDUCTION:
-        printf("%5d DEDUCTED ", idx);
+        printf("%5d DEDUCTED ", te->idx);
         Expr_Print(te->e);
         printf("\n");
         break;
@@ -296,6 +412,10 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    pool_map_init(&pool);
+    terms_set_init(&terms);
+    terms_set_init(&assumptions);
+
     char *filename = *argv;
     argv++;
     
@@ -308,8 +428,6 @@ int main(int argc, char **argv) {
         else if (strcmp(*argv, "-neg") == 0) add_neg_terms = 0;
         else if (strcmp(*argv, "+self_impl") == 0) add_self_impl = 1;
         else if (strcmp(*argv, "-self_impl") == 0) add_self_impl = 0;
-        else if (strcmp(*argv, "+lt") == 0) less_terms = 1;
-        else if (strcmp(*argv, "-lt") == 0) less_terms = 0;
         argv++;
     }
 
@@ -320,23 +438,18 @@ int main(int argc, char **argv) {
     Parser_Init(&parser, buffer);
     expr_t *goal = Parser_ReadExpr(&parser);
 
-    if (less_terms) {
-        AddTerm(Expr_Atom("A"));
-        AddTerm(Expr_Atom("B"));
-        AddTerm(Expr_Atom("C"));
-    }
-    else {
-        ExtractSubformulas(goal, 0);
-        if (add_neg_terms) ExtractSubformulas(goal, 1);
-    }
+    
+    ExtractSubformulas(goal, 0);
+    if (add_neg_terms) ExtractSubformulas(goal, 1);
 
     if (add_self_impl) {
         expr_t* self_impl = Expr_Implies(goal, goal);
         AddTerm(self_impl);
     }
 
-    for (int i=0; i<term_count; i++) {
-        printf("  T%d: ", i); Expr_Print(terms[i]); printf("\n");
+    printf("TERMS:\n");
+    for (terms_set_itr it = terms_set_first(&terms); !terms_set_is_end(it); it = terms_set_next(it)) {
+        printf("    "); Expr_Print(it.data->key); printf("\n");
     }
     printf("\n");
 
@@ -347,23 +460,23 @@ int main(int argc, char **argv) {
     }
 
     while (1) {
-        char *line = NULL;
-        size_t n;
-        ssize_t res = getline(&line, &n, fptr);
+        static char line[128];
+        char *res = fgets(line, sizeof(line), fptr);
         
-        if (res == -1) break;
-        if (line[0] == '#') continue;
-
+        if (res == NULL) break;
+        if (line[0] == '#') {
+            continue;
+        }
+        
         Parser_Init(&parser, line);
         expr_t *ax = Parser_ReadExpr(&parser);
-        InstantiateAxioms(ax);
-        free(line);
+        InstantiateAxiom(ax);
     }
 
     fclose(fptr);
 
-    int res = RunInference(goal);
-    if (res && print_history) PrintHistory(pool_count - 1);
+    true_expr_t *res = RunInference(goal);
+    if (res != NULL && print_history) PrintHistory(res);
 
     return !res;
 }

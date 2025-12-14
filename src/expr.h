@@ -1,6 +1,8 @@
 #ifndef EXPR_H
 #define EXPR_H
 
+#include <stdint.h>
+
 typedef enum {
     EXPR_IMPLIES,
     EXPR_NOT,
@@ -9,7 +11,9 @@ typedef enum {
 
 struct expr_t;
 typedef struct expr_t {
+    uint64_t hash;
     expr_type_t type;
+
     union {
         struct {
             struct expr_t *a, *b;
@@ -33,5 +37,15 @@ expr_t *Expr_Not(expr_t *a);
 expr_t *Expr_Atom(char *name);
 void    Expr_Free(expr_t* expr);
 expr_t *Expr_Clone(expr_t *expr);
+
+void Expr_HashImpl(expr_t *e, uint64_t *hash);
+uint64_t Expr_Hash(expr_t *e);
+
+#ifdef PARANOID
+void _Assert(int expr, const char *msg, const char *func);
+#define ASSERT(expr, msg) _Assert(expr, msg, __func__)
+#else
+#define ASSERT(expr, msg)
+#endif
 
 #endif

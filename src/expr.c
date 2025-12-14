@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define ARENA_SIZE 1000000
+#define ARENA_SIZE 10000000
 static expr_t arena[ARENA_SIZE];
 static int arena_idx = 0;
 
@@ -93,6 +93,10 @@ int Expr_Print(expr_t *expr)
 
 int Expr_Equal(expr_t *a, expr_t *b)
 {
+    if (Expr_Hash(a) != Expr_Hash(b)) {
+        return 0;
+    }
+
     if (a->type != b->type) {
         return 0;
     }
@@ -157,4 +161,52 @@ expr_t *Expr_Clone(expr_t *expr)
     }
 
     return new_expr;
+}
+
+#define HASH_SEED 33
+#define HASH_MOD  1000000007
+
+void String_Hash(char *str, uint64_t *hash)
+{
+    int c;
+    while ((c = *str++))
+        *hash = (*hash * HASH_SEED + c) % HASH_MOD;
+}
+
+void _Assert(int expr, const char *msg, const char *func)
+{
+    if (!expr) {
+        printf("%s: assert: %s\n", func, msg);
+        exit(1);
+    }
+}
+
+static void Expr_CalcHash(expr_t *e)
+{
+    e->hash = 5381 + e->type;
+    switch (e->type) {
+        case EXPR_ATOM:
+            String_Hash(e->atom.name, &e->hash);
+            break;
+        case EXPR_IMPLIES:
+            e->hash += Expr_Hash(e->implies.a) * HASH_SEED;
+            e->hash += Expr_Hash(e->implies.b) * HASH_SEED * HASH_SEED;
+            e->hash %= HASH_MOD;
+            break;
+        case EXPR_NOT:
+            e->hash += Expr_Hash(e->not.a) * HASH_SEED;
+            e->hash %= HASH_MOD;
+            break;
+        default:
+            ASSERT(0, "Unknown expr type");
+    }
+}
+
+uint64_t Expr_Hash(expr_t *e)
+{
+    if (e->hash == 0) {
+        Expr_CalcHash(e);
+    }
+    
+    return e->hash;
 }
